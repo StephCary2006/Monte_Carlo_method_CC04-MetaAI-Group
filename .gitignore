@@ -1,0 +1,23 @@
+# Compiled C binaries & objects
+*.o
+*.out
+*.exe
+pi_single
+pi_local
+pi_mutex
+pi_false_sharing
+pi_race
+
+# Python cache
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# OS / Editor files
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.vscode/
+.idea/
