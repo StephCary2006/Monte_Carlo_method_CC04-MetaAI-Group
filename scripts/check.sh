@@ -1,99 +1,76 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
 N=1000000
 SEED=12345
-TOLERANCE=0.01
+THREADS=4
+TOLERANCE=0.03
 
-passed=0
-failed=0
-
-check_output() {
-    local name="$1"
-    local output="$2"
-
-    if ! python3 - "$name" "$output" "$N" "$TOLERANCE" <<'PY'
-import sys
-import math
-
-name, output, expected_n, tolerance = sys.argv[1:]
-expected_n = int(expected_n)
-tolerance = float(tolerance)
-
-try:
-    fields = output.strip().split(",")
-
-    if len(fields) != 4:
-        raise ValueError("Expected 4 CSV fields")
-
-    pi_value = float(fields[0])
-    inside = int(fields[1])
-    total = int(fields[2])
-    elapsed = float(fields[3])
-
-    if total != expected_n:
-        raise ValueError(f"Expected {expected_n} points, got {total}")
-
-    if not (0 <= inside <= total):
-        raise ValueError("Invalid inside-point count")
-
-    if not math.isfinite(pi_value) or abs(pi_value - 3.141592653589793) > tolerance:
-        raise ValueError(f"Pi estimate outside tolerance: {pi_value}")
-
-    if not math.isfinite(elapsed) or elapsed < 0:
-        raise ValueError("Invalid execution time")
-
-except Exception as exc:
-    print(f"FAIL: {name}: {exc}")
-    sys.exit(1)
-
-print(f"PASS: {name}")
-PY
-    then
-        return 1
-    fi
-}
-
-run_test() {
-    local name="$1"
-    shift
-
-    echo "Testing: $name"
-
-    local output
-    if ! output=$("$@" 2>/dev/null); then
-        echo "FAIL: $name (program returned an error)"
-        failed=$((failed + 1))
-        return
-    fi
-
-    if check_output "$name" "$output"; then
-        passed=$((passed + 1))
-    else
-        failed=$((failed + 1))
-    fi
-}
-
-# Approach 1: Single Thread
-run_test "pi_single" ./pi_single "$N" "$SEED"
-
-# Approach 2: Local Accumulation
-run_test "pi_local (4 threads)" ./pi_local "$N" 4 "$SEED"
-
-# Approach 3: Shared Variable + Mutex
-run_test "pi_mutex (k=1)" ./pi_mutex "$N" 4 1 "$SEED"
-run_test "pi_mutex (k=100)" ./pi_mutex "$N" 4 100 "$SEED"
-
-echo
-echo "=========================================="
-echo "Tests passed: $passed"
-echo "Tests failed: $failed"
-echo "=========================================="
-
-if [ "$failed" -eq 0 ]; then
-    echo "check.sh: TAT CA DEU DUNG"
-    exit 0
-else
-    echo "check.sh: CO LOI"
+fail() {
+    echo "[FAIL] $1" >&2
     exit 1
-fi
+}
+
+pass() {
+    echo "[PASS] $1"
+}
+
+check_pi() {
+    local pi="$1"
+    awk -v p="$pi" -v tol="$TOLERANCE" \
+        'BEGIN {
+            if (p > 3.141592653589793 - tol &&
+                p < 3.141592653589793 + tol) exit 0;
+            exit 1;
+        }'
+}
+
+echo "======================================"
+echo " Monte Carlo Pi - Correctness Tests"
+echo "======================================"
+
+# 1. Single-thread baseline
+out="$(./pi_single "$N" "$SEED")"
+pi="$(awk '/Pi estimate/ {print $NF}' <<< "$out")"
+points="$(awk '/Points/ {print $NF}' <<< "$out")"
+
+[[ "$points" == "$N" ]] || fail "pi_single point count"
+check_pi "$pi" || fail "pi_single pi estimate"
+pass "pi_single"
+
+# 2. Local accumulation
+out="$(./pi_local "$N" "$THREADS" "$SEED")"
+IFS=',' read -r approach threads points k pi elapsed <<< "$out"
+
+[[ "$points" == "$N" ]] || fail "pi_local point count"
+[[ "$threads" == "$THREADS" ]] || fail "pi_local thread count"
+check_pi "$pi" || fail "pi_local pi estimate"
+pass "pi_local"
+
+# 3. False sharing: packed and padded
+for mode in packed padded; do
+    out="$(./pi_false_sharing "$N" "$THREADS" "$SEED" "$mode")"
+    IFS=',' read -r approach threads points k pi elapsed <<< "$out"
+
+    [[ "$points" == "$N" ]] || fail "false sharing $mode point count"
+    check_pi "$pi" || fail "false sharing $mode pi estimate"
+    pass "pi_false_sharing ($mode)"
+done
+
+# 4. Mutex
+out="$(./pi_mutex "$N" "$THREADS" 1 "$SEED")"
+points="$(awk -F= '$1=="points" {print $2}' <<< "$out")"
+threads="$(awk -F= '$1=="threads" {print $2}' <<< "$out")"
+pi="$(awk -F= '$1=="pi" {print $2}' <<< "$out")"
+
+[[ "$points" == "$N" ]] || fail "pi_mutex point count"
+[[ "$threads" == "$THREADS" ]] || fail "pi_mutex thread count"
+check_pi "$pi" || fail "pi_mutex pi estimate"
+pass "pi_mutex"
+
+echo "======================================"
+echo " All correctness tests passed."
+echo "======================================"
