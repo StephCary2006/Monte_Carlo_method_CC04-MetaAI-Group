@@ -1,116 +1,209 @@
 #!/usr/bin/env python3
 
-"""
-Plot benchmark results for one machine.
-
-Usage:
-    python3 scripts/plot.py tv4
-"""
-
-import csv
-import sys
+import argparse
 from pathlib import Path
 
+import pandas as pd
 import matplotlib.pyplot as plt
 
 
-ROOT = Path(__file__).resolve().parent.parent
-MACHINE = sys.argv[1] if len(sys.argv) > 1 else "tv4"
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--tv", default="tv4",
+                        help="Result folder, e.g. tv1 or tv4")
+    args = parser.parse_args()
 
-SUMMARY = ROOT / "results" / MACHINE / "summary.csv"
-FIGURES = ROOT / "figures"
+    root = Path(__file__).resolve().parent.parent
+    result_dir = root / "results" / args.tv
+    figure_dir = root / "figures" / args.tv
 
-FIGURES.mkdir(parents=True, exist_ok=True)
+    raw_file = result_dir / "raw.csv"
+    figure_dir.mkdir(parents=True, exist_ok=True)
 
-if not SUMMARY.exists():
-    raise SystemExit(f"Error: {SUMMARY} does not exist.")
+    if not raw_file.exists():
+        raise SystemExit(f"Missing file: {raw_file}")
 
-with SUMMARY.open(newline="") as file:
-    rows = list(csv.DictReader(file))
+    df = pd.read_csv(raw_file)
 
-if not rows:
-    raise SystemExit("Error: summary.csv is empty.")
+    df["execution_time"] = pd.to_numeric(df["execution_time"])
+    df["threads"] = pd.to_numeric(df["threads"])
+    df["batch_size"] = pd.to_numeric(df["batch_size"])
 
-# Group rows by approach and mutex batch size.
-groups = {}
+    # Summary statistics
+    keys = ["machine", "approach", "threads", "batch_size"]
 
-for row in rows:
-    approach = row["approach"]
-    batch = int(row["batch_size"])
-    label = f"{approach}_k{batch}" if approach == "mutex" else approach
+    summary = (
+        df.groupby(keys, dropna=False)["execution_time"]
+        .agg(mean_time="mean", stddev="std", runs="count")
+        .reset_index()
+    )
 
-    groups.setdefault(label, []).append({
-        "threads": int(row["threads"]),
-        "time": float(row["mean_time"]),
-        "speedup": float(row["speedup"]),
-        "efficiency": float(row["efficiency"]),
-    })
+    summary["stddev"] = summary["stddev"].fillna(0)
 
-for values in groups.values():
-    values.sort(key=lambda item: item["threads"])
+    # Baseline = average single-thread time for each machine
+    baseline = (
+        summary[summary["approach"] == "single"]
+        .groupby("machine")["mean_time"]
+        .first()
+    )
 
+    summary["speedup"] = summary.apply(
+        lambda row: (
+            baseline.get(row["machine"], float("nan"))
+            / row["mean_time"]
+        ),
+        axis=1,
+    )
 
-def plot_metric(metric, ylabel, title, filename, ideal=False):
-    plt.figure(figsize=(9, 6))
+    summary["efficiency"] = summary["speedup"] / summary["threads"]
 
-    for label, values in groups.items():
-        x = [item["threads"] for item in values]
-        y = [item[metric] for item in values]
+    summary_file = result_dir / "summary.csv"
+    summary.to_csv(summary_file, index=False)
 
-        plt.plot(x, y, marker="o", label=label)
+    print(f"Saved summary: {summary_file}")
 
-    if ideal:
-        max_threads = max(
-            item["threads"]
-            for values in groups.values()
-            for item in values
-        )
-        plt.plot(
-            [1, max_threads],
-            [1, max_threads],
-            linestyle="--",
-            label="Ideal speedup",
-        )
+    # 1. Execution time vs threads
+    scaling = summary[
+        summary["approach"].isin(["local", "mutex"])
+    ]
 
-    plt.xlabel("Number of Threads")
-    plt.ylabel(ylabel)
-    plt.title(f"{title} - {MACHINE}")
-    plt.xticks(sorted({
-        item["threads"]
-        for values in groups.values()
-        for item in values
-    }))
+    for approach in scaling["approach"].unique():
+        subset = scaling[scaling["approach"] == approach]
+
+        if subset.empty:
+            continue
+
+        plt.figure()
+        for k, group in subset.groupby("batch_size"):
+            label = f"k={int(k)}" if approach == "mutex" else approach
+            group = group.sort_values("threads")
+            plt.plot(
+                group["threads"],
+                group["mean_time"],
+                marker="o",
+                label=label,
+            )
+
+        plt.xlabel("Number of threads")
+        plt.ylabel("Mean execution time (seconds)")
+        plt.title(f"{approach}: Execution time vs threads")
+        plt.legend()
+        plt.grid(True)
+        plt.tight_layout()
+        plt.savefig(figure_dir / f"{approach}_time.png", dpi=150)
+        plt.close()
+
+    # 2. Speedup
+    plt.figure()
+
+    for approach in ["local", "mutex"]:
+        subset = summary[summary["approach"] == approach]
+
+        if approach == "mutex":
+            subset = subset[subset["batch_size"] == 1]
+
+        subset = subset.sort_values("threads")
+
+        if not subset.empty:
+            plt.plot(
+                subset["threads"],
+                subset["speedup"],
+                marker="o",
+                label=approach,
+            )
+
+    plt.xlabel("Number of threads")
+    plt.ylabel("Speedup")
+    plt.title("Speedup vs number of threads")
     plt.grid(True)
     plt.legend()
     plt.tight_layout()
-
-    output = FIGURES / filename
-    plt.savefig(output, dpi=300)
+    plt.savefig(figure_dir / "speedup.png", dpi=150)
     plt.close()
 
-    print(f"Created: {output}")
+    # 3. Parallel efficiency
+    plt.figure()
+
+    for approach in ["local", "mutex"]:
+        subset = summary[summary["approach"] == approach]
+
+        if approach == "mutex":
+            subset = subset[subset["batch_size"] == 1]
+
+        subset = subset.sort_values("threads")
+
+        if not subset.empty:
+            plt.plot(
+                subset["threads"],
+                subset["efficiency"],
+                marker="o",
+                label=approach,
+            )
+
+    plt.xlabel("Number of threads")
+    plt.ylabel("Parallel efficiency")
+    plt.title("Parallel efficiency vs number of threads")
+    plt.grid(True)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(figure_dir / "efficiency.png", dpi=150)
+    plt.close()
+
+    # 4. Mutex batch-size comparison
+    mutex = summary[summary["approach"] == "mutex"]
+
+    if not mutex.empty:
+        plt.figure()
+
+        for threads, group in mutex.groupby("threads"):
+            group = group.sort_values("batch_size")
+            plt.plot(
+                group["batch_size"],
+                group["mean_time"],
+                marker="o",
+                label=f"{int(threads)} threads",
+            )
+
+        plt.xscale("log")
+        plt.xlabel("Batch size (k)")
+        plt.ylabel("Mean execution time (seconds)")
+        plt.title("Mutex performance vs batch size")
+        plt.grid(True)
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(figure_dir / "mutex_batch_size.png", dpi=150)
+        plt.close()
+
+    # 5. False sharing comparison
+    fs = summary[
+        summary["approach"].isin(["fs_packed", "fs_padded"])
+    ]
+
+    if not fs.empty:
+        plt.figure()
+
+        for approach in ["fs_packed", "fs_padded"]:
+            subset = fs[fs["approach"] == approach].sort_values("threads")
+
+            if not subset.empty:
+                plt.plot(
+                    subset["threads"],
+                    subset["mean_time"],
+                    marker="o",
+                    label=approach,
+                )
+
+        plt.xlabel("Number of threads")
+        plt.ylabel("Mean execution time (seconds)")
+        plt.title("False sharing: packed vs padded")
+        plt.grid(True)
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(figure_dir / "false_sharing.png", dpi=150)
+        plt.close()
+
+    print(f"Figures saved in: {figure_dir}")
 
 
-plot_metric(
-    "time",
-    "Execution Time (seconds)",
-    "Execution Time vs Threads",
-    f"{MACHINE}_execution_time.png",
-)
-
-plot_metric(
-    "speedup",
-    "Speedup",
-    "Speedup vs Threads",
-    f"{MACHINE}_speedup.png",
-    ideal=True,
-)
-
-plot_metric(
-    "efficiency",
-    "Parallel Efficiency",
-    "Parallel Efficiency vs Threads",
-    f"{MACHINE}_efficiency.png",
-)
-
-print("Plotting completed.")
+if __name__ == "__main__":
+    main()
