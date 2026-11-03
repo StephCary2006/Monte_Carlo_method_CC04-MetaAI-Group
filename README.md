@@ -34,15 +34,12 @@ Monte_Carlo_method_CC04-MetaAI-Group/
 │   └── compare/                    # [TV4 xuất] machines.csv và kết quả kiểm chứng chéo 5 máy
 │
 ├── figures/                        # [TV4 xuất] Toàn bộ đồ thị (.png) dùng để đưa vào báo cáo
-├── report/                         # [TV5 quản lý] File báo cáo chung và biên bản review code
-└── docs/                           # Đề bài gốc (.docx) và Hướng dẫn phân công (.pdf)
+└── report/                         # [TV5 quản lý] File báo cáo chung và biên bản review code
 ```
 
 ---
 
 ## 2. Bảng Phân Công Nhiệm Vụ (Work Split)
-
-Chi tiết đầy đủ xem tại `docs/Work_Split_Huong_dan_Monte_Carlo_Pi.pdf`.
 
 | TV | Phụ trách | File Code / Công cụ cần tạo | Phần viết trong Báo cáo (`report/`) |
 | :-: | :--- | :--- | :--- |

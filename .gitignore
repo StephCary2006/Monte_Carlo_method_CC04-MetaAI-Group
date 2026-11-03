@@ -21,3 +21,8 @@ Thumbs.db
 *~
 .vscode/
 .idea/
+
+# Ignore docs folder
+docs/
+
+docs
